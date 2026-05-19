@@ -1,7 +1,7 @@
 """
 config.py - Centralized configuration for form scoring thresholds
 
-Edit these values to tune form scoring during Day 1.
+
 """
 
 class FormScoringConfig:
@@ -20,20 +20,20 @@ class FormScoringConfig:
     # Asymmetry = |left_shoulder_elevation - right_shoulder_elevation|
     # Measures how level the shoulders are (0 = perfectly level, 1 = very uneven)
     
-    ASYMMETRY_THRESHOLD = 0.08
+    ASYMMETRY_THRESHOLD = 0.01
     # Start penalizing when asymmetry exceeds this value
     # Lower = more strict (penalize small differences)
     # Higher = more lenient (only penalize big differences)
-    # Try: 0.04 (strict), 0.08 (medium), 0.12 (lenient)
+    # Try: 0.01 (strict), 0.015 (medium), 0.02 (lenient)
     
-    ASYMMETRY_PENALTY_MULTIPLIER = 200
+    ASYMMETRY_PENALTY_MULTIPLIER = 2400
     # How many points to deduct per unit of asymmetry beyond threshold
     # Formula: penalty = (asymmetry - threshold) * multiplier
     # Lower = less harsh penalty
     # Higher = harsher penalty
-    # Try: 50 (gentle), 150 (medium), 250 (strict)
-    # Example: asymmetry=0.12, threshold=0.08, multiplier=200 
-    #         → penalty = (0.12 - 0.08) * 200 = -8 points
+    # Try: 800 (gentle), 1600 (medium), 2400 (strict)
+    # Example: asymmetry=0.02, threshold=0.01, multiplier=2400
+    #          penalty = (0.02 - 0.01) * 2400 = -24 points
     
     # ====== TRUNK LEAN SETTINGS ======
     # Trunk lean = forward/backward movement of torso
@@ -66,6 +66,15 @@ class FormScoringConfig:
     # Maximum allowed difference between left and right elevation
     # If one shoulder lags more than this, flag an error
     # Try: 0.03 (strict), 0.05 (medium), 0.08 (lenient)
+
+
+# ====== VISIBILITY / FRAME FILTERING ======
+# Minimum visibility required for key landmarks to be considered "visible"
+# Lowering this makes the system accept more frames (may increase false positives)
+VISIBILITY_THRESHOLD = 0.30
+
+# If True, some debug per-frame visibility logging may be enabled by scripts
+VERBOSE_VISIBILITY = False
 
 
 # ===== EXAMPLE TUNING SCENARIOS =====

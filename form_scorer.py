@@ -1,158 +1,132 @@
 """
-Angle Calculator - Compute shoulder angles from pose landmarks
+Form Scorer - Convert angle measurements into form score (0-100) and error feedback
 """
 
-import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, List
+from angle_calculator import AngleCalculator
+from config import FormScoringConfig
 
 
-class AngleCalculator:
+class FormScorer:
     """
-    Calculate relevant angles for shoulder raise form analysis.
+    Score shoulder raise form (0-100).
     
-    Key metrics:
-    1. Shoulder elevation angle: How high shoulder moved (relative to hip)
-    2. Asymmetry: Difference between left and right shoulder height
-    3. Trunk lean: Forward/backward deviation
+    Score breakdown:
+    - Start: 100
+    - Penalty: Asymmetry (shoulders not level)
+    - Penalty: Trunk lean (leaning forward/backward)
+    - Penalty: Low elevation (not raising enough)
+    - Minimum: 0, Maximum: 100
     """
     
-    @staticmethod
-    def calculate_shoulder_elevation(
-        shoulder_pos: Tuple[float, float, float],
-        hip_pos: Tuple[float, float, float]
-    ) -> float:
+    def __init__(self, config: FormScoringConfig = None):
         """
-        Calculate vertical distance between shoulder and hip (elevation angle).
-        
-        In a shoulder raise, the shoulder moves UP.
-        We measure this as the vertical displacement.
+        Initialize form scorer.
         
         Args:
-            shoulder_pos: (x, y, z) normalized coordinates (0-1)
-            hip_pos: (x, y, z) normalized coordinates (0-1)
-            
-        Returns:
-            Elevation in normalized coordinates (0-1 range, where higher = more elevation)
+            config: FormScoringConfig object (uses defaults if None)
         """
-        # In video coordinates, Y increases downward
-        # So lower Y value = higher in image
-        elevation = hip_pos[1] - shoulder_pos[1]
-        return max(0, elevation)  # Clamp to 0 minimum
+        self.config = config or FormScoringConfig()
     
-    @staticmethod
-    def calculate_asymmetry(
-        left_shoulder: Tuple[float, float, float],
-        right_shoulder: Tuple[float, float, float],
-        left_hip: Tuple[float, float, float],
-        right_hip: Tuple[float, float, float]
-    ) -> float:
+    def score_form(self, angles: Dict) -> Dict:
         """
-        Calculate asymmetry between left and right shoulder elevation.
-        
-        Asymmetry = |left_elevation - right_elevation|
+        Score the current form and generate error messages.
         
         Args:
-            left_shoulder: (x, y, z)
-            right_shoulder: (x, y, z)
-            left_hip: (x, y, z)
-            right_hip: (x, y, z)
+            angles: Dictionary from AngleCalculator.calculate_all_angles()
             
         Returns:
-            Asymmetry score (0-1, where 0 = perfectly level)
+            Dictionary with:
+            - score: 0-100 form score
+            - errors: List of error messages (empty if form is good)
+            - severity: "good" / "warning" / "critical"
+            - details: Debug info on how score was calculated
         """
-        left_elevation = AngleCalculator.calculate_shoulder_elevation(left_shoulder, left_hip)
-        right_elevation = AngleCalculator.calculate_shoulder_elevation(right_shoulder, right_hip)
         
-        asymmetry = abs(left_elevation - right_elevation)
-        return min(asymmetry, 1.0)  # Clamp to 1.0 max
-    
-    @staticmethod
-    def calculate_trunk_lean(
-        left_shoulder: Tuple[float, float, float],
-        right_shoulder: Tuple[float, float, float],
-        left_hip: Tuple[float, float, float],
-        right_hip: Tuple[float, float, float]
-    ) -> float:
-        """
-        Calculate forward/backward trunk tilt.
+        result = {
+            "score": 100,
+            "errors": [],
+            "severity": "good",
+            "details": {}
+        }
         
-        Ideal: Shoulders and hips should maintain similar horizontal alignment.
-        Bad: If shoulders move significantly forward/backward relative to hips.
+        # If pose not detected or joints not visible
+        if not angles["is_valid"]:
+            result["score"] = 0
+            result["errors"] = ["Cannot detect pose - check camera angle and lighting"]
+            result["severity"] = "critical"
+            return result
         
-        Args:
-            left_shoulder: (x, y, z)
-            right_shoulder: (x, y, z)
-            left_hip: (x, y, z)
-            right_hip: (x, y, z)
+        left_elev = angles["left_shoulder_elevation"]
+        right_elev = angles["right_shoulder_elevation"]
+        asymmetry = angles["asymmetry"]
+        lean = angles["trunk_lean"]
+        
+        # ---- Asymmetry check ----
+        if asymmetry > self.config.ASYMMETRY_THRESHOLD:
+            penalty = (asymmetry - self.config.ASYMMETRY_THRESHOLD) * self.config.ASYMMETRY_PENALTY_MULTIPLIER
+            result["score"] -= penalty
             
-        Returns:
-            Trunk lean (0-1, where 0 = no lean)
-        """
-        # Calculate center of shoulders and hips
-        shoulder_center_x = (left_shoulder[0] + right_shoulder[0]) / 2
-        shoulder_center_y = (left_shoulder[1] + right_shoulder[1]) / 2
+            # Determine which shoulder is higher
+            if left_elev > right_elev:
+                result["errors"].append("Right shoulder elevated - level both shoulders")
+            else:
+                result["errors"].append("Left shoulder elevated - level both shoulders")
+            
+            result["details"]["asymmetry_penalty"] = penalty
         
-        hip_center_x = (left_hip[0] + right_hip[0]) / 2
-        hip_center_y = (left_hip[1] + right_hip[1]) / 2
+        # ---- Trunk lean check ----
+        if lean > self.config.TRUNK_LEAN_THRESHOLD:
+            penalty = (lean - self.config.TRUNK_LEAN_THRESHOLD) * self.config.TRUNK_LEAN_PENALTY_MULTIPLIER
+            result["score"] -= penalty
+            result["errors"].append("Trunk leaning - keep chest upright")
+            result["details"]["lean_penalty"] = penalty
         
-        # Lean = horizontal distance between shoulder and hip centers
-        # (Forward/backward movement in camera view)
-        lean = abs(shoulder_center_x - hip_center_x)
-        return min(lean, 1.0)
+        # ---- Elevation check ----
+        avg_elevation = (left_elev + right_elev) / 2
+        
+        if avg_elevation < self.config.MIN_ELEVATION:
+            result["score"] -= self.config.LOW_ELEVATION_PENALTY
+            result["errors"].append("Raise shoulders higher")
+            result["details"]["elevation_penalty"] = self.config.LOW_ELEVATION_PENALTY
+        
+        # ---- Min elevation difference (one shoulder lags) ----
+        elev_diff = abs(left_elev - right_elev)
+        if avg_elevation > self.config.MIN_ELEVATION and elev_diff > self.config.MIN_ELEVATION_DIFF:
+            # One shoulder is raising significantly less than the other
+            if left_elev < right_elev:
+                if "Left shoulder elevated" not in result["errors"]:
+                    result["errors"].append("Left shoulder lagging - raise both equally")
+            else:
+                if "Right shoulder elevated" not in result["errors"]:
+                    result["errors"].append("Right shoulder lagging - raise both equally")
+        
+        # ---- Clamp score ----
+        result["score"] = max(0, min(100, result["score"]))
+        
+        # ---- Determine severity ----
+        if result["score"] >= 75:
+            result["severity"] = "good"
+        elif result["score"] >= 50:
+            result["severity"] = "warning"
+        else:
+            result["severity"] = "critical"
+        
+        # ---- If score is good, no errors ----
+        if result["score"] >= 80:
+            result["errors"] = []
+        
+        return result
     
-    @staticmethod
-    def calculate_all_angles(landmarks_dict: Dict) -> Dict:
+    def score_frame(self, landmarks_dict: Dict) -> Dict:
         """
-        Calculate all relevant angles from landmarks.
+        Convenience method: Score directly from landmarks dict.
         
         Args:
             landmarks_dict: Output from PoseAnalyzer.analyze_frame()
             
         Returns:
-            Dictionary with:
-            - left_shoulder_elevation: float (0-1)
-            - right_shoulder_elevation: float (0-1)
-            - asymmetry: float (0-1)
-            - trunk_lean: float (0-1)
-            - is_valid: bool (all joints visible?)
+            Scoring result (same format as score_form)
         """
-        result = {
-            "left_shoulder_elevation": 0,
-            "right_shoulder_elevation": 0,
-            "asymmetry": 0,
-            "trunk_lean": 0,
-            "is_valid": False
-        }
-        
-        if not landmarks_dict["has_pose"]:
-            return result
-        
-        # Check visibility of key joints
-        landmarks = landmarks_dict["landmarks"]
-        required_landmarks = [11, 12, 23, 24]  # shoulders and hips
-        
-        for idx in required_landmarks:
-            if landmarks[idx]["visibility"] < 0.5:
-                # Joint not clearly visible
-                return result
-        
-        left_shoulder = landmarks_dict["left_shoulder"]
-        right_shoulder = landmarks_dict["right_shoulder"]
-        left_hip = landmarks_dict["left_hip"]
-        right_hip = landmarks_dict["right_hip"]
-        
-        result["left_shoulder_elevation"] = AngleCalculator.calculate_shoulder_elevation(
-            left_shoulder, left_hip
-        )
-        result["right_shoulder_elevation"] = AngleCalculator.calculate_shoulder_elevation(
-            right_shoulder, right_hip
-        )
-        result["asymmetry"] = AngleCalculator.calculate_asymmetry(
-            left_shoulder, right_shoulder, left_hip, right_hip
-        )
-        result["trunk_lean"] = AngleCalculator.calculate_trunk_lean(
-            left_shoulder, right_shoulder, left_hip, right_hip
-        )
-        result["is_valid"] = True
-        
-        return result
+        angles = AngleCalculator.calculate_all_angles(landmarks_dict)
+        return self.score_form(angles)
